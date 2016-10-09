@@ -1,0 +1,29 @@
+#!/bin/sh
+
+project="$(dirname -- "$(readlink -f -- "$0")")"
+
+. "$project"/common.inc.sh
+
+normalize_files() {
+    files="$(
+        cat | while read line; do
+            printf '%s %s\n' "$(printf '%s' "$line" | wc -c)" "$line"
+        done | sort -ns | cut -d' ' -f2-
+    )"
+    longest_length="$(printf '%s' "$files" | tail -1 | wc -c)"
+    printf '%s' "$files" | while read file; do
+        length="$(printf '%s' "$file" | wc -c)"
+        if [ "$length" -lt "$longest_length" ]; then
+            missing_zeros="$(
+                seq "$length" "$(expr "$longest_length" - 1)" | while read _; do
+                    printf '0'
+                done
+            )"
+            dir="$(dirname -- "$file")"
+            after_f="$(basename -- "$file" | sed 's/^f//')"
+            mv "$file" "$(printf '%s/f%s%s' "$dir" "$missing_zeros" "$after_f")"
+        fi
+    done
+}
+
+photorec_files | normalize_files

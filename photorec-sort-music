@@ -1,0 +1,132 @@
+#!/bin/sh
+
+project="$(dirname -- "$(readlink -f -- "$0")")"
+
+. "$project"/common.inc.sh
+
+ffmpeg_duration() {
+    ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$1" 2>/dev/null
+}
+
+ffmpeg_metadata() {
+    ffprobe "$1" 2>&1 \
+        | grep -a -A10000 '^  Metadata:' \
+        | grep -a -B10000 '^  Duration' \
+        | grep -a '^    ' \
+    | while read line; do
+        printf '%s:%s\n' \
+            "$(printf '%s' "$line" | cut -d: -f1 | sed 's/\s*$//g;s/^\s*//g')" \
+            "$(printf '%s' "$line" | cut -d: -f2- | sed 's/\s*$//g;s/^\s*//g')"
+    done
+}
+
+query_metadata() {
+    metadata="$1"
+    key="$2"
+    result="$(printf '%s' "$metadata" | grep -a '^'"$key"':' | cut -d: -f2-)"
+    printf '%s' "$result"
+    test -n "$result"
+}
+
+artist() {
+    metadata="$1"
+    query_metadata "$metadata" artist || query_metadata "$metadata" composer
+}
+
+album() {
+    metadata="$1"
+    query_metadata "$metadata" album
+}
+
+title() {
+    metadata="$1"
+    query_metadata "$metadata" title
+}
+
+track() {
+    metadata="$1"
+    query_metadata "$metadata" track | cut -d/ -f1 | sed 's/^0*//'
+}
+
+track_total() {
+    metadata="$1"
+    query_metadata "$metadata" track | cut -d/ -f2 | sed 's/^0*//'
+}
+
+disc() {
+    metadata="$1"
+    query_metadata "$metadata" disc | cut -d/ -f1 | sed 's/^0*//'
+}
+
+disc_total() {
+    metadata="$1"
+    query_metadata "$metadata" disc | cut -d/ -f2 | sed 's/^0*//'
+}
+
+extract_cover() {
+    cat /dev/zero | ffmpeg -n -i "$1" "$(printf '%s/cover.jpg' "$(dirname -- "$1")")" >/dev/null 2>/dev/null
+}
+
+output_dir="$1"
+
+if [ -z "$output_dir" ]; then
+    printf 'Usage: photorec-sort-music OUTPUT_DIR\n' >&2
+    exit 1
+fi
+
+while read file; do
+    metadata="$(ffmpeg_metadata "$file")"
+    artist="$(artist "$metadata")"
+    album="$(album "$metadata")"
+    title="$(title "$metadata")"
+    track="$(track "$metadata")"
+    disc="$(disc "$metadata")"
+    disc_total="$(disc_total "$metadata")"
+
+    if [ -n "$title" ]; then
+        filename="$(printf '%s%s' "$(fat "$title")" "$(extname "$file")")"
+    else
+        filename="$file"
+    fi
+
+    if [ -n "$disc" ] && [ "$(printf '%d' "$disc_total")" -gt 1 ]; then
+        disc_prefix="$(printf '%d-' "$disc")"
+    else
+        disc_prefix=""
+    fi
+
+    if [ -n "$track" ]; then
+        track_prefix="$(printf '%s%02d ' "$disc_prefix" "$track" 2>/dev/null)"
+    else
+        track_prefix=""
+    fi
+
+    filename="$(printf '%s%s' "$track_prefix" "$filename")"
+
+    if [ -n "$artist" ] && [ -n "$album" ]; then
+        dir="$(printf '%s/%s/%s' "$output_dir" "$(fat "$artist")" "$(fat "$album")")"
+    elif [ -n "$artist" ]; then
+        dir="$(printf '%s/%s' "$output_dir" "$(fat "$artist")")"
+    elif [ -n "$album" ]; then
+        dir="$(printf '%s/[unknown]/%s' "$output_dir" "$(fat "$album")")"
+    elif [ -n "$title" ]; then
+        dir="$(printf '%s/[unknown]' "$output_dir")"
+    elif [ -n "$track" ]; then
+        dir="$output_dir"
+    else
+        printf 'no metadata: %s\n' "$file"
+        continue
+    fi
+
+    if [ "$(printf '%.0f\n' "$(ffmpeg_duration "$file")" 2>/dev/null)" -lt 1 ]; then
+        printf 'probably corrupt: %s\n' "$file"
+        continue
+    fi
+
+    destination="$(printf '%s/%s' "$dir" "$filename")"
+
+    mkdir -p "$dir"
+    printf 'copying %s -> %s\n' "$file" "$destination"
+    cp --reflink=auto "$file" "$destination"
+    extract_cover "$destination"
+done
